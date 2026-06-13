@@ -1,4 +1,4 @@
-# ODMR compare sender (Windows). Start VM: ~/odmr/scripts/compare_stream.sh capture
+# ODMR sender (Windows). Start VM first: ~/odmr/scripts/run_stream.sh
 param(
     [string]$DstHost = "192.168.1.9",
     [int]$Count = 400,

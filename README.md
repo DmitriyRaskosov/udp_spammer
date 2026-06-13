@@ -118,26 +118,16 @@ python udp_spammer.py --channel 2 --trigger-edge 1 --count 100
 
 Режим для потокового анализа на приёмнике ([odmr_test](https://github.com/DmitriyRaskosov/odmr_test)).
 
-**Шаблон compare (stream vs offline):**
+**Обычный пайплайн (online, без raw и без analyze.py):**
 
 ```powershell
-# Windows — после ./scripts/compare_stream.sh capture на VM
+# VM: ~/odmr/scripts/run_stream.sh
 .\scripts\spammer_odmr_compare.ps1 -DstHost 192.168.1.9 -Count 400
 ```
 
-На VM см. `~/odmr/scripts/compare_stream.sh` (capture + verify + cmp).
+На VM результат: `runs/.../pulses_grouped.txt` (`--analyze-stream`, `--group-size 400`).
 
-Ручной запуск спаммера:
-
-```powershell
-python -u udp_spammer.py `
-  --dst-host 192.168.1.9 `
-  --odmr-pair `
-  --body-mode timestamps `
-  --timing fixed `
-  --interval 255e-6 `
-  --count 400
-```
+Offline `analyze.py` и `--record-raw` — только для отладки/регрессии (`scripts/verify_offline.sh`).
 
 `--odmr-pair` автоматически чередует ch0 и ch2, внутри пары задержка 0, между парами — `--interval`.
 На ch2 включён auto-toggle-edge для корректной группировки even/odd.
