@@ -96,6 +96,22 @@ def verify_coarse_wrap_markers() -> None:
     print(f"coarse wrap markers in long ch2 run: OK ({marker_packets} packets with markers)")
 
 
+def verify_odmr_pair_marker_sync() -> None:
+    """ch0 and ch2 packets in a pair must share the same +100ms marker positions."""
+    factory = OdmrPairFactory(body_mode="timestamps", event_step_ns=100.0)
+    marker_pairs = 0
+    for _ in range(20_000):
+        p0, p2 = factory.next_pair()
+        w0 = list(iter_timestamp_words(p0))
+        w2 = list(iter_timestamp_words(p2))
+        for word0, word2 in zip(w0, w2):
+            assert (word0 == MARKER_100MS) == (word2 == MARKER_100MS)
+        if any(word == MARKER_100MS for word in w0):
+            marker_pairs += 1
+    assert marker_pairs > 0, "expected +100ms markers after coarse wrap"
+    print(f"odmr pair marker sync: OK ({marker_pairs} pairs with markers)")
+
+
 def verify_odmr_pair_stress() -> None:
     factory = OdmrPairFactory(body_mode="timestamps", event_step_ns=100.0)
     for _ in range(150_000):
@@ -128,6 +144,7 @@ def main() -> None:
     verify_timestamps_mode()
     verify_dual_channel()
     verify_odmr_pair()
+    verify_odmr_pair_marker_sync()
     verify_coarse_wrap_markers()
     verify_odmr_pair_stress()
     verify_long_timestamps()

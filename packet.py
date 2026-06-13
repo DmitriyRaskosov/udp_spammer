@@ -9,6 +9,7 @@ from typing import Literal
 from timestamp import (
     TIMESTAMPS_PER_PACKET,
     ChannelTimestampState,
+    SharedEventClock,
     TimestampPacketStream,
 )
 
@@ -77,6 +78,7 @@ class PacketFactory:
         auto_toggle_edge: bool = False,
         marker_every_n_packets: int = 0,
         shared_counter: list[int] | None = None,
+        shared_clock: SharedEventClock | None = None,
     ):
         self.channel = channel
         self.body_mode = body_mode
@@ -93,6 +95,7 @@ class PacketFactory:
                 base_ns=ts_base_ns,
                 event_step_ns=event_step_ns,
                 auto_toggle_edge=auto_toggle_edge,
+                shared_clock=shared_clock,
             )
             self._legacy_timestamps = None
         else:
@@ -220,6 +223,7 @@ class OdmrPairFactory:
         marker_every_n_packets: int = 0,
     ):
         shared_counter = [0]
+        shared_clock = SharedEventClock(base_ns=ts_base_ns, event_step_ns=event_step_ns)
         factory_kwargs = dict(
             body_mode=body_mode,
             ts_base_ns=ts_base_ns,
@@ -229,6 +233,7 @@ class OdmrPairFactory:
             events_per_packet=events_per_packet,
             marker_every_n_packets=marker_every_n_packets,
             shared_counter=shared_counter,
+            shared_clock=shared_clock,
         )
         self._photon = PacketFactory(channel=0, **factory_kwargs)
         self._trigger = PacketFactory(
@@ -236,6 +241,7 @@ class OdmrPairFactory:
             auto_toggle_edge=True,
             **factory_kwargs,
         )
+        self._shared_clock = shared_clock
         self._shared_counter = shared_counter
         self._pairs_sent = 0
 
@@ -248,7 +254,9 @@ class OdmrPairFactory:
         return self._pairs_sent
 
     def next_pair(self) -> tuple[bytes, bytes]:
+        clock_state = self._shared_clock.snapshot()
         payload0 = self._photon.next_payload()
+        self._shared_clock.restore(clock_state)
         payload2 = self._trigger.next_payload()
         self._pairs_sent += 1
         return payload0, payload2

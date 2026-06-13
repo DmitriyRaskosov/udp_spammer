@@ -80,6 +80,45 @@ def encode_word(channel: int, t_ns: float, edge_bit: int = 0) -> int:
     return encode_timestamp_ch2(t_ns, edge_bit)
 
 
+class SharedEventClock:
+    """Shared monotonic timeline for multi-channel packet generation."""
+
+    def __init__(self, base_ns: float = 1000.0, event_step_ns: float = 100.0):
+        self._next_ns = base_ns
+        self._event_step_ns = event_step_ns
+        self._pending_100ms_marker = False
+        self._coarse_wrap_at_ns = COARSE_WRAP_NS
+
+    def snapshot(self) -> tuple[float, float, bool, float]:
+        return (
+            self._next_ns,
+            self._coarse_wrap_at_ns,
+            self._pending_100ms_marker,
+            self._event_step_ns,
+        )
+
+    def restore(self, state: tuple[float, float, bool, float]) -> None:
+        self._next_ns, self._coarse_wrap_at_ns, self._pending_100ms_marker, self._event_step_ns = state
+
+    def inject_100ms_marker(self) -> None:
+        self._pending_100ms_marker = True
+
+    def append_marker(self, words: list[int]) -> None:
+        words.append(MARKER_100MS)
+        self._next_ns += 100_000_000.0
+        self._pending_100ms_marker = False
+
+    def needs_coarse_wrap_marker(self) -> bool:
+        return self._next_ns >= self._coarse_wrap_at_ns
+
+    def emit_coarse_wrap_marker(self, words: list[int]) -> None:
+        self._coarse_wrap_at_ns += COARSE_WRAP_NS
+        self.append_marker(words)
+
+    def advance_after_event(self) -> None:
+        self._next_ns += self._event_step_ns
+
+
 class TimestampPacketStream:
     """Monotonic per-channel event stream packed into 255 words per UDP payload."""
 
@@ -90,16 +129,14 @@ class TimestampPacketStream:
         event_step_ns: float = 100.0,
         edge_bit: int = 0,
         auto_toggle_edge: bool = False,
+        shared_clock: SharedEventClock | None = None,
     ):
         if channel not in (0, 1, 2):
             raise ValueError("Channel must be 0, 1, or 2")
         self.channel = channel
-        self._next_ns = base_ns
-        self._event_step_ns = event_step_ns
+        self._clock = shared_clock or SharedEventClock(base_ns, event_step_ns)
         self._edge_bit = edge_bit & 1
         self._auto_toggle_edge = auto_toggle_edge and channel == 2
-        self._pending_100ms_marker = False
-        self._coarse_wrap_at_ns = COARSE_WRAP_NS
 
     @property
     def auto_toggle_edge(self) -> bool:
@@ -107,39 +144,32 @@ class TimestampPacketStream:
 
     @property
     def event_step_ns(self) -> float:
-        return self._event_step_ns
+        return self._clock._event_step_ns
+
+    @property
+    def shared_clock(self) -> SharedEventClock:
+        return self._clock
 
     def set_trigger_edge(self, edge_bit: int) -> None:
         self._edge_bit = edge_bit & 1
 
     def inject_100ms_marker(self) -> None:
-        self._pending_100ms_marker = True
-
-    def _append_marker(self, words: list[int]) -> None:
-        words.append(MARKER_100MS)
-        self._next_ns += 100_000_000.0
-        self._pending_100ms_marker = False
-
-    def _needs_coarse_wrap_marker(self) -> bool:
-        return self._next_ns >= self._coarse_wrap_at_ns
-
-    def _emit_coarse_wrap_marker(self, words: list[int]) -> None:
-        self._coarse_wrap_at_ns += COARSE_WRAP_NS
-        self._append_marker(words)
+        self._clock.inject_100ms_marker()
 
     def _append_event(self, words: list[int]) -> None:
-        if self._pending_100ms_marker:
-            self._append_marker(words)
+        clock = self._clock
+        if clock._pending_100ms_marker:
+            clock.append_marker(words)
             return
 
-        if self._needs_coarse_wrap_marker():
-            self._emit_coarse_wrap_marker(words)
+        if clock.needs_coarse_wrap_marker():
+            clock.emit_coarse_wrap_marker(words)
             return
 
-        words.append(encode_word(self.channel, self._next_ns, self._edge_bit))
+        words.append(encode_word(self.channel, clock._next_ns, self._edge_bit))
         if self._auto_toggle_edge:
             self._edge_bit ^= 1
-        self._next_ns += self._event_step_ns
+        clock.advance_after_event()
 
     def next_words(self, count: int = TIMESTAMPS_PER_PACKET) -> list[int]:
         if count < 1 or count > TIMESTAMPS_PER_PACKET:
