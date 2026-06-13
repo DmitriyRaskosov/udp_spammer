@@ -4,13 +4,19 @@ from __future__ import annotations
 
 import os
 import struct
+import sys
+from array import array
 from typing import Literal
 
 from timestamp import (
+    COARSE_WRAP_NS,
+    MARKER_100MS,
     TIMESTAMPS_PER_PACKET,
     ChannelTimestampState,
     SharedEventClock,
     TimestampPacketStream,
+    encode_timestamp_ch01_fast,
+    encode_timestamp_ch2_fast,
 )
 
 BodyMode = Literal["noise", "counter", "counter_fill", "timestamps"]
@@ -33,6 +39,28 @@ def build_timestamp_block(words: list[int]) -> bytes:
     for index, word in enumerate(words):
         struct.pack_into(">I", block, index * 4, word & 0xFFFFFFFF)
     return bytes(block)
+
+
+def pack_timestamp_payload(
+    channel: int,
+    counter: int,
+    words: array,
+    buffer: bytearray,
+) -> memoryview:
+    if len(words) != TIMESTAMPS_PER_PACKET:
+        raise ValueError(f"Expected {TIMESTAMPS_PER_PACKET} timestamp words, got {len(words)}")
+    if len(buffer) != 1024:
+        raise ValueError(f"Payload buffer must be 1024 bytes, got {len(buffer)}")
+    buffer[0] = channel & 0x0F
+    buffer[1] = 0
+    struct.pack_into(">H", buffer, 2, counter & 0xFFFF)
+    if sys.byteorder == "little":
+        words.byteswap()
+    block = words.tobytes()
+    if sys.byteorder == "little":
+        words.byteswap()
+    buffer[4 : 4 + TIMESTAMPS_PER_PACKET * 4] = block
+    return memoryview(buffer)
 
 
 def build_payload(
@@ -222,28 +250,46 @@ class OdmrPairFactory:
         events_per_packet: int = TIMESTAMPS_PER_PACKET,
         marker_every_n_packets: int = 0,
     ):
-        shared_counter = [0]
-        shared_clock = SharedEventClock(base_ns=ts_base_ns, event_step_ns=event_step_ns)
-        factory_kwargs = dict(
-            body_mode=body_mode,
-            ts_base_ns=ts_base_ns,
-            ts2_offset_ns=ts2_offset_ns,
-            ts_step_ns=ts_step_ns,
-            event_step_ns=event_step_ns,
-            events_per_packet=events_per_packet,
-            marker_every_n_packets=marker_every_n_packets,
-            shared_counter=shared_counter,
-            shared_clock=shared_clock,
-        )
-        self._photon = PacketFactory(channel=0, **factory_kwargs)
-        self._trigger = PacketFactory(
-            channel=2,
-            auto_toggle_edge=True,
-            **factory_kwargs,
-        )
-        self._shared_clock = shared_clock
-        self._shared_counter = shared_counter
+        self._body_mode = body_mode
+        self._events_per_packet = events_per_packet
+        self._marker_every_n_packets = marker_every_n_packets
+        self._packet_index = 0
+        self._shared_counter = [0]
+        self._edge_bit = 0
         self._pairs_sent = 0
+        self._words0 = array("I", [0] * TIMESTAMPS_PER_PACKET)
+        self._words2 = array("I", [0] * TIMESTAMPS_PER_PACKET)
+        self._payload0 = bytearray(1024)
+        self._payload2 = bytearray(1024)
+        self._next_ns_int = int(ts_base_ns)
+        self._step_ns_int = int(event_step_ns)
+        self._wrap_at_ns_int = int(COARSE_WRAP_NS)
+        self._pending_marker = False
+        self._shared_clock = SharedEventClock(base_ns=ts_base_ns, event_step_ns=event_step_ns)
+
+        if body_mode != "timestamps":
+            shared_counter = self._shared_counter
+            shared_clock = self._shared_clock
+            factory_kwargs = dict(
+                body_mode=body_mode,
+                ts_base_ns=ts_base_ns,
+                ts2_offset_ns=ts2_offset_ns,
+                ts_step_ns=ts_step_ns,
+                event_step_ns=event_step_ns,
+                events_per_packet=events_per_packet,
+                marker_every_n_packets=marker_every_n_packets,
+                shared_counter=shared_counter,
+                shared_clock=shared_clock,
+            )
+            self._photon = PacketFactory(channel=0, **factory_kwargs)
+            self._trigger = PacketFactory(
+                channel=2,
+                auto_toggle_edge=True,
+                **factory_kwargs,
+            )
+        else:
+            self._photon = None
+            self._trigger = None
 
     @property
     def counter(self) -> int:
@@ -253,10 +299,71 @@ class OdmrPairFactory:
     def pairs_sent(self) -> int:
         return self._pairs_sent
 
-    def next_pair(self) -> tuple[bytes, bytes]:
+    def _maybe_inject_marker(self) -> None:
+        if self._marker_every_n_packets > 0 and self._packet_index > 0:
+            if self._packet_index % self._marker_every_n_packets == 0:
+                self._pending_marker = True
+
+    def _fill_timestamp_pair(self) -> None:
+        edge = self._edge_bit
+        words0 = self._words0
+        words2 = self._words2
+        t_ns = self._next_ns_int
+        step_ns = self._step_ns_int
+        wrap_at = self._wrap_at_ns_int
+        wrap_step = int(COARSE_WRAP_NS)
+        marker_step = 100_000_000
+
+        for index in range(TIMESTAMPS_PER_PACKET):
+            if self._pending_marker:
+                t_ns += marker_step
+                self._pending_marker = False
+                words0[index] = MARKER_100MS
+                words2[index] = MARKER_100MS
+                continue
+
+            if t_ns >= wrap_at:
+                wrap_at += wrap_step
+                t_ns += marker_step
+                words0[index] = MARKER_100MS
+                words2[index] = MARKER_100MS
+                continue
+
+            words0[index] = encode_timestamp_ch01_fast(t_ns)
+            words2[index] = encode_timestamp_ch2_fast(t_ns, edge)
+            edge ^= 1
+            t_ns += step_ns
+
+        self._next_ns_int = t_ns
+        self._wrap_at_ns_int = wrap_at
+        self._edge_bit = edge
+
+    def _next_pair_timestamps(self) -> tuple[bytes | memoryview, bytes | memoryview]:
+        self._maybe_inject_marker()
+        self._fill_timestamp_pair()
+
+        counter0 = self._shared_counter[0]
+        payload0 = pack_timestamp_payload(0, counter0, self._words0, self._payload0)
+        self._shared_counter[0] = (counter0 + 1) & 0xFFFF
+
+        counter2 = self._shared_counter[0]
+        payload2 = pack_timestamp_payload(2, counter2, self._words2, self._payload2)
+        self._shared_counter[0] = (counter2 + 1) & 0xFFFF
+
+        self._packet_index += 1
+        self._pairs_sent += 1
+        return payload0, payload2
+
+    def _next_pair_legacy(self) -> tuple[bytes, bytes]:
+        assert self._photon is not None and self._trigger is not None
         clock_state = self._shared_clock.snapshot()
         payload0 = self._photon.next_payload()
         self._shared_clock.restore(clock_state)
         payload2 = self._trigger.next_payload()
         self._pairs_sent += 1
         return payload0, payload2
+
+    def next_pair(self) -> tuple[bytes | memoryview, bytes | memoryview]:
+        if self._body_mode == "timestamps":
+            return self._next_pair_timestamps()
+        return self._next_pair_legacy()

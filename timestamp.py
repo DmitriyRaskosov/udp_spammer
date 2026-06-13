@@ -27,6 +27,23 @@ def _quantize_fine_ch01(remainder_ns: float) -> int:
     return best
 
 
+# Integer remainder 0..4 ns -> fine index (valid when t_ns is an integer nanosecond).
+_FINE_LUT_INT: tuple[int, ...] = tuple(_quantize_fine_ch01(float(r)) for r in range(5))
+
+
+def encode_timestamp_ch01_fast(t_ns_int: int) -> int:
+    coarse = (t_ns_int // 5) & COARSE_MASK
+    fine = _FINE_LUT_INT[t_ns_int % 5]
+    return ((coarse << 6) | fine) & WORD_MASK
+
+
+def encode_timestamp_ch2_fast(t_ns_int: int, edge_bit: int) -> int:
+    bit5 = edge_bit & 1
+    coarse = (t_ns_int // 5) & COARSE_MASK
+    fine = 0x1F if bit5 else 0x00
+    return ((coarse << 6) | (bit5 << 5) | fine) & WORD_MASK
+
+
 def decode_timestamp(word: int) -> float | None:
     """Return timestamp in nanoseconds, or None for the +100 ms marker."""
     if word == MARKER_100MS:

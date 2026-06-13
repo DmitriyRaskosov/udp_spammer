@@ -13,6 +13,8 @@ from packet import DualChannelFactory, OdmrPairFactory, PacketFactory
 from timing import IntervalGenerator, wait_until
 from timestamp import TIMESTAMPS_PER_PACKET
 
+ODMR_PROGRESS_EVERY = 20_000
+
 
 def packet_prefix_counter(payload: bytes) -> int:
     """uint16 packet counter from prefix bytes 2..3 (big-endian)."""
@@ -240,7 +242,7 @@ def run_odmr_pair(config: SimulatorConfig) -> int:
                     break
                 sock.sendto(payload, destination)
                 sent += 1
-                if sent <= 4 or sent % 200 == 0:
+                if sent <= 4 or sent % ODMR_PROGRESS_EVERY == 0:
                     print(
                         f"sent #{sent}: ch={payload[0] & 0x0F} "
                         f"counter={packet_prefix_counter(payload)} "
