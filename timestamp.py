@@ -8,6 +8,7 @@ TIMESTAMPS_PER_PACKET = 255  # bytes 4..1023 of the 1024-byte payload
 # Hardware coarse field is 26 bits; values wrap instead of growing past uint32.
 COARSE_MASK = 0x3FFFFFF
 WORD_MASK = 0xFFFFFFFF
+COARSE_WRAP_NS = (COARSE_MASK + 1) * 5.0  # ~335.544 ms
 
 # Precomputed fine corrections in nanoseconds (channels 0/1).
 _FINE_NS: tuple[float, ...] = tuple(
@@ -42,14 +43,17 @@ def encode_timestamp_ch01(t_ns: float) -> int:
     if t_ns <= 0:
         t_ns = ZERO_SHIFT_NS
 
-    coarse = int(t_ns // 5) & COARSE_MASK
-    remainder_ns = t_ns - int(t_ns // 5) * 5.0
-    fine = _quantize_fine_ch01(remainder_ns)
+    t_ns = float(t_ns)
+    for _ in range(32):
+        coarse = int(t_ns // 5) & COARSE_MASK
+        remainder_ns = t_ns - int(t_ns // 5) * 5.0
+        fine = _quantize_fine_ch01(remainder_ns)
+        word = ((coarse << 6) | fine) & WORD_MASK
+        if word != MARKER_100MS:
+            return word
+        t_ns += ZERO_SHIFT_NS
 
-    word = ((coarse << 6) | fine) & WORD_MASK
-    if word == MARKER_100MS:
-        return encode_timestamp_ch01(ZERO_SHIFT_NS)
-    return word
+    return 0x01
 
 
 def encode_timestamp_ch2(t_ns: float, edge_bit: int) -> int:
@@ -57,14 +61,17 @@ def encode_timestamp_ch2(t_ns: float, edge_bit: int) -> int:
     if t_ns <= 0:
         t_ns = ZERO_SHIFT_NS
 
-    coarse = int(t_ns // 5) & COARSE_MASK
     bit5 = edge_bit & 1
-    fine = 0x1F if bit5 else 0x00
+    t_ns = float(t_ns)
+    for _ in range(32):
+        coarse = int(t_ns // 5) & COARSE_MASK
+        fine = 0x1F if bit5 else 0x00
+        word = ((coarse << 6) | (bit5 << 5) | fine) & WORD_MASK
+        if word != MARKER_100MS:
+            return word
+        t_ns += ZERO_SHIFT_NS
 
-    word = ((coarse << 6) | (bit5 << 5) | fine) & WORD_MASK
-    if word == MARKER_100MS:
-        return encode_timestamp_ch2(ZERO_SHIFT_NS, edge_bit)
-    return word
+    return ((bit5 << 5) | (0x1F if bit5 else 0x01)) & WORD_MASK
 
 
 def encode_word(channel: int, t_ns: float, edge_bit: int = 0) -> int:
@@ -92,6 +99,7 @@ class TimestampPacketStream:
         self._edge_bit = edge_bit & 1
         self._auto_toggle_edge = auto_toggle_edge and channel == 2
         self._pending_100ms_marker = False
+        self._coarse_wrap_at_ns = COARSE_WRAP_NS
 
     @property
     def auto_toggle_edge(self) -> bool:
@@ -107,28 +115,39 @@ class TimestampPacketStream:
     def inject_100ms_marker(self) -> None:
         self._pending_100ms_marker = True
 
+    def _append_marker(self, words: list[int]) -> None:
+        words.append(MARKER_100MS)
+        self._next_ns += 100_000_000.0
+        self._pending_100ms_marker = False
+
+    def _needs_coarse_wrap_marker(self) -> bool:
+        return self._next_ns >= self._coarse_wrap_at_ns
+
+    def _emit_coarse_wrap_marker(self, words: list[int]) -> None:
+        self._coarse_wrap_at_ns += COARSE_WRAP_NS
+        self._append_marker(words)
+
+    def _append_event(self, words: list[int]) -> None:
+        if self._pending_100ms_marker:
+            self._append_marker(words)
+            return
+
+        if self._needs_coarse_wrap_marker():
+            self._emit_coarse_wrap_marker(words)
+            return
+
+        words.append(encode_word(self.channel, self._next_ns, self._edge_bit))
+        if self._auto_toggle_edge:
+            self._edge_bit ^= 1
+        self._next_ns += self._event_step_ns
+
     def next_words(self, count: int = TIMESTAMPS_PER_PACKET) -> list[int]:
         if count < 1 or count > TIMESTAMPS_PER_PACKET:
             raise ValueError(f"count must be 1..{TIMESTAMPS_PER_PACKET}")
 
         words: list[int] = []
-        for _ in range(count):
-            if self._pending_100ms_marker:
-                words.append(MARKER_100MS)
-                self._next_ns += 100_000_000.0
-                self._pending_100ms_marker = False
-                continue
-
-            words.append(encode_word(self.channel, self._next_ns, self._edge_bit))
-            if self._auto_toggle_edge:
-                self._edge_bit ^= 1
-            self._next_ns += self._event_step_ns
-
         while len(words) < TIMESTAMPS_PER_PACKET:
-            words.append(encode_word(self.channel, self._next_ns, self._edge_bit))
-            if self._auto_toggle_edge:
-                self._edge_bit ^= 1
-            self._next_ns += self._event_step_ns
+            self._append_event(words)
 
         return words
 

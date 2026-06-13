@@ -6,7 +6,7 @@ from __future__ import annotations
 import struct
 
 from packet import DualChannelFactory, OdmrPairFactory, PacketFactory
-from timestamp import TIMESTAMPS_PER_PACKET, MARKER_100MS, decode_timestamp
+from timestamp import TIMESTAMPS_PER_PACKET, MARKER_100MS, COARSE_WRAP_NS, decode_timestamp, encode_timestamp_ch2
 
 
 def iter_timestamp_words(payload: bytes):
@@ -76,6 +76,34 @@ def verify_odmr_pair() -> None:
     print("odmr pair ch0+ch2 shared counter: OK")
 
 
+def verify_encode_ch2_no_recursion() -> None:
+    """Regression: ch2 edge=0 at small t must not recurse on marker word."""
+    for t_ns in (0.0, 0.185, 5.0, COARSE_WRAP_NS):
+        for edge in (0, 1):
+            word = encode_timestamp_ch2(t_ns, edge)
+            assert word != MARKER_100MS, f"encoded marker at t={t_ns} edge={edge}"
+    print("encode_timestamp_ch2 no marker recursion: OK")
+
+
+def verify_coarse_wrap_markers() -> None:
+    factory = PacketFactory(channel=2, body_mode="timestamps", auto_toggle_edge=True)
+    marker_packets = 0
+    for _ in range(20_000):
+        words = list(iter_timestamp_words(factory.next_payload()))
+        if MARKER_100MS in words:
+            marker_packets += 1
+    assert marker_packets > 0, "expected +100ms markers after coarse wrap"
+    print(f"coarse wrap markers in long ch2 run: OK ({marker_packets} packets with markers)")
+
+
+def verify_odmr_pair_stress() -> None:
+    factory = OdmrPairFactory(body_mode="timestamps", event_step_ns=100.0)
+    for _ in range(150_000):
+        p0, p2 = factory.next_pair()
+        assert len(p0) == 1024 and len(p2) == 1024
+    print("odmr pair stress (150k packets, past coarse wrap): OK")
+
+
 def verify_long_timestamps() -> None:
     factory = PacketFactory(channel=0, body_mode="timestamps", event_step_ns=100.0)
     for _ in range(20_000):
@@ -96,9 +124,12 @@ def verify_legacy_mode() -> None:
 
 
 def main() -> None:
+    verify_encode_ch2_no_recursion()
     verify_timestamps_mode()
     verify_dual_channel()
     verify_odmr_pair()
+    verify_coarse_wrap_markers()
+    verify_odmr_pair_stress()
     verify_long_timestamps()
     verify_legacy_mode()
     print("OK: packet layout matches ODMR UDP 21.04.2026 / odmr packet_collector")
