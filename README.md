@@ -16,7 +16,7 @@ Python-утилита для имитации UDP-потока лаборато�
 ## Быстрый старт
 
 ```powershell
-cd C:\Users\dmitr\Desktop\udp_lab_sim
+cd ваш_путь\udp_lab_sim
 python udp_spammer.py
 ```
 
