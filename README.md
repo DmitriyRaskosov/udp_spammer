@@ -116,27 +116,27 @@ python udp_spammer.py --channel 2 --trigger-edge 1 --count 100
 
 ### ODMR: photon (ch0) + trigger (ch2)
 
-Режим для потокового анализа на приёмнике ([odmr_test](https://github.com/DmitriyRaskosov/odmr_test)):
+Режим для потокового анализа на приёмнике ([odmr_test](https://github.com/DmitriyRaskosov/odmr_test)).
+
+**Шаблон compare (stream vs offline):**
 
 ```powershell
-# VM слушает enp0s3; Windows шлёт 200 пар ch0->ch2
+# Windows — после ./scripts/compare_stream.sh capture на VM
+.\scripts\spammer_odmr_compare.ps1 -DstHost 192.168.1.9 -Count 400
+```
+
+На VM см. `~/odmr/scripts/compare_stream.sh` (capture + verify + cmp).
+
+Ручной запуск спаммера:
+
+```powershell
 python -u udp_spammer.py `
   --dst-host 192.168.1.9 `
   --odmr-pair `
   --body-mode timestamps `
   --timing fixed `
   --interval 255e-6 `
-  --count 200
-```
-
-На VM (параллельно):
-
-```bash
-RUN=~/odmr/runs/$(date +%Y%m%d_%H%M%S)
-sudo ~/odmr/build/packet_capture enp0s3 \
-  --analyze-stream \
-  --output-dir "$RUN" \
-  --group-size 2
+  --count 400
 ```
 
 `--odmr-pair` автоматически чередует ch0 и ch2, внутри пары задержка 0, между парами — `--interval`.

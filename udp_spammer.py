@@ -14,6 +14,11 @@ from timing import IntervalGenerator, wait_until
 from timestamp import TIMESTAMPS_PER_PACKET
 
 
+def packet_prefix_counter(payload: bytes) -> int:
+    """uint16 packet counter from prefix bytes 2..3 (big-endian)."""
+    return int.from_bytes(payload[2:4], "big")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Synthesize UDP packets for lab board protocol testing.",
@@ -177,9 +182,9 @@ def run_dual(config: SimulatorConfig) -> int:
                 sock.sendto(payload, destination)
                 sent += 1
                 if sent <= 4 or sent % 200 == 0:
-                    counter = factory.counter - 1
                     print(
-                        f"sent #{sent}: ch={payload[0] & 0x0F} counter={counter} "
+                        f"sent #{sent}: ch={payload[0] & 0x0F} "
+                        f"counter={packet_prefix_counter(payload)} "
                         f"prefix={payload[:4].hex()}"
                     )
             if config.packet_count != 0 and sent >= config.packet_count:
@@ -236,9 +241,9 @@ def run_odmr_pair(config: SimulatorConfig) -> int:
                 sock.sendto(payload, destination)
                 sent += 1
                 if sent <= 4 or sent % 200 == 0:
-                    counter = factory.counter - 1
                     print(
-                        f"sent #{sent}: ch={payload[0] & 0x0F} counter={counter} "
+                        f"sent #{sent}: ch={payload[0] & 0x0F} "
+                        f"counter={packet_prefix_counter(payload)} "
                         f"prefix={payload[:4].hex()}"
                     )
             if config.packet_count != 0 and sent >= config.packet_count:
@@ -312,10 +317,10 @@ def run(config: SimulatorConfig, trigger_edge: int = 0) -> int:
             sent += 1
 
             if sent <= 3 or sent % 100 == 0:
-                counter = factory.counter - 1
                 ts0 = int.from_bytes(payload[4:8], "big")
                 print(
-                    f"sent #{sent}: ch={payload[0] & 0x0F} counter={counter} "
+                    f"sent #{sent}: ch={payload[0] & 0x0F} "
+                    f"counter={packet_prefix_counter(payload)} "
                     f"ts[0]=0x{ts0:08x} prefix={payload[:4].hex()}"
                 )
 
