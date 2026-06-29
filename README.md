@@ -116,25 +116,41 @@ python udp_spammer.py --channel 2 --trigger-edge 1 --count 100
 
 ### ODMR: photon (ch0) + trigger (ch2)
 
-Режим для потокового анализа на приёмнике ([odmr_test](https://github.com/DmitriyRaskosov/odmr_test)).
+Режим для потокового анализа на приёмнике ([odmr_test](https://github.com/DmitriyRaskosov/odmr_test), ветка **`home`**).
 
-**Обычный пайплайн (online, без raw и без analyze.py):**
+**Production (online, без raw и без analyze.py):**
 
 ```powershell
-# VM: ~/odmr/scripts/run_stream.sh
+# VM terminal 1:
+#   cd ~/odmr && bash scripts/run_stream.sh
+
+# Windows terminal 2 (after capture started):
+.\scripts\spammer_odmr_compare.ps1 -CvOdmrProfile -DstHost 192.168.1.9
+```
+
+Профиль читает `cv_odmr.ini`: 36 частот × 100 повторов → 14 400 UDP-пакета, 36 строк в `pulses_grouped.txt`.
+
+Быстрый smoke:
+
+```powershell
+.\scripts\spammer_odmr_compare.ps1 -CvOdmrProfile -QuickTest -DstHost 192.168.1.9
+```
+
+Короткий legacy-smoke (400 пар, без полного sweep):
+
+```powershell
 .\scripts\spammer_odmr_compare.ps1 -DstHost 192.168.1.9 -Count 400
 ```
 
-На VM результат: `runs/.../pulses_grouped.txt` (`--analyze-stream`, `--group-size 400`).
+На VM: `runs/.../pulses_grouped.txt` (`--analyze-stream`, параметры из `--experiment-ini`).
 
-Offline `analyze.py` и `--record-raw` — только для отладки/регрессии (`scripts/verify_offline.sh`).
+`analyze.py` и `--record-raw` на приёмнике — **только debug** (`scripts/verify_offline.sh`).
 
-`--odmr-pair` автоматически чередует ch0 и ch2, внутри пары задержка 0, между парами — `--interval`.
-На ch2 включён auto-toggle-edge для корректной группировки even/odd.
+`--odmr-pair` / `--cv-odmr-profile`: ch0+ch2, общий uint16 counter с 0; ch2 auto-toggle-edge для even/odd.
 
-При длинных прогонах (`Count` > ~25000) симулятор автоматически вставляет **+100 ms маркеры** (`word 0`) при переполнении 26-битного coarse поля (~335 ms), как плата — иначе приёмник видит `bad pulse window`.
+При длинных прогонах плотного потока (`OdmrPairFactory`) симулятор вставляет **+100 ms маркеры** при wrap coarse (~335 ms).
 
-Проверка: `python verify_packets.py` (включая stress past coarse wrap).
+Проверка: `python verify_packets.py`
 
 ---
 

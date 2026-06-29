@@ -248,12 +248,26 @@ ch0 → ch1 → (пауза ~255 µs) → ch0 → ch1 → ...
 | Неравномерные интервалы | `timing.py` |
 | CLI и отправка | `udp_spammer.py` |
 
-### 8.2. Интеграция с odmr
+### 8.2. Интеграция с odmr (home)
 
-- Приёмник: Linux, raw Ethernet, кадр **1066** байт, `./cv_odmr eth0`
-- Отправитель: `python udp_spammer.py --dst-host <IP_VM> --body-mode timestamps`
-- Канал 2 + `analyze.py`: `--channel 2 --auto-toggle-edge`
-- Проверка офлайн: `python verify_packets.py`
+**Приёмник (Linux):**
+
+```bash
+cd ~/odmr && bash scripts/run_stream.sh
+# packet_capture: --analyze-stream, --experiment-ini cv_odmr.ini
+# → runs/.../pulses_grouped.txt (без ch*.txt)
+```
+
+**Отправитель (Windows, тест):**
+
+```powershell
+.\scripts\spammer_odmr_compare.ps1 -CvOdmrProfile -DstHost <IP_VM>
+```
+
+Группировка: `number_of_repeats` even/odd пар на частоту + число точек Rigol из ini.  
+Не использовать legacy `--group-size 400` / `-Count` как эталон полного cv_odmr.
+
+Офлайн: `python verify_packets.py`. Debug на приёмнике: `--record-raw` + `analyze.py` (не production).
 
 ### 8.3. Расширение на 3 канала
 
