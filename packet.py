@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import os
+import random
 import struct
 import sys
 from array import array
 from typing import Literal
 
+from experiment_ini import CvOdmrExperiment
 from timestamp import (
     COARSE_WRAP_NS,
     MARKER_100MS,
@@ -367,3 +369,120 @@ class OdmrPairFactory:
         if self._body_mode == "timestamps":
             return self._next_pair_timestamps()
         return self._next_pair_legacy()
+
+
+class CvOdmrPairFactory:
+    """cv_odmr experiment: sparse random photons, one pulse window per UDP pair."""
+
+    def __init__(
+        self,
+        experiment: CvOdmrExperiment,
+        *,
+        ts_base_ns: float = 1000.0,
+        pulse_min_ns: int = 500,
+        pulse_max_ns: int = 5000,
+        photon_min: int = 0,
+        photon_max: int = 40,
+        photon_step_min_ns: int = 70,
+        photon_step_max_ns: int = 170,
+        photon_step_rare_max_ns: int = 500,
+        photon_step_rare_prob: float = 0.08,
+        freq_gap_marker: bool = False,
+        seed: int | None = None,
+    ):
+        self._experiment = experiment
+        self._pulse_min_ns = pulse_min_ns
+        self._pulse_max_ns = pulse_max_ns
+        self._photon_min = photon_min
+        self._photon_max = photon_max
+        self._photon_step_min_ns = photon_step_min_ns
+        self._photon_step_max_ns = photon_step_max_ns
+        self._photon_step_rare_max_ns = photon_step_rare_max_ns
+        self._photon_step_rare_prob = photon_step_rare_prob
+        self._freq_gap_marker = freq_gap_marker
+        self._rng = random.Random(seed)
+
+        self._shared_counter = [0]
+        self._words0 = array("I", [0] * TIMESTAMPS_PER_PACKET)
+        self._words2 = array("I", [0] * TIMESTAMPS_PER_PACKET)
+        self._payload0 = bytearray(1024)
+        self._payload2 = bytearray(1024)
+        self._next_ns_int = int(ts_base_ns)
+        self._edge_bit = 0
+        self._pairs_sent = 0
+        self._freq_index = 0
+        self._pulse_in_freq = 0
+
+    @property
+    def counter(self) -> int:
+        return self._shared_counter[0]
+
+    @property
+    def pairs_sent(self) -> int:
+        return self._pairs_sent
+
+    @property
+    def is_complete(self) -> bool:
+        return self._freq_index >= self._experiment.expected_groups
+
+    def _photon_step_ns(self) -> int:
+        if self._rng.random() < self._photon_step_rare_prob:
+            return self._rng.randint(self._photon_step_min_ns, self._photon_step_rare_max_ns)
+        return self._rng.randint(self._photon_step_min_ns, self._photon_step_max_ns)
+
+    def _clear_words(self) -> None:
+        for index in range(TIMESTAMPS_PER_PACKET):
+            self._words0[index] = 0
+            self._words2[index] = 0
+
+    def _fill_single_pulse(self) -> None:
+        self._clear_words()
+
+        if self._freq_gap_marker and self._pulse_in_freq == 0 and self._freq_index > 0:
+            self._next_ns_int += 100_000_000
+            self._words0[0] = MARKER_100MS
+            self._words2[0] = MARKER_100MS
+            return
+
+        pulse_len = self._rng.randint(self._pulse_min_ns, self._pulse_max_ns)
+        t0 = self._next_ns_int
+        t_end = t0 + pulse_len
+
+        self._words2[0] = encode_timestamp_ch2_fast(t0, self._edge_bit)
+        self._words2[1] = encode_timestamp_ch2_fast(t_end, self._edge_bit ^ 1)
+        self._edge_bit ^= 1
+
+        photon_count = self._rng.randint(self._photon_min, self._photon_max)
+        t_photon = t0 + self._rng.randint(20, max(21, pulse_len // 3))
+        photon_index = 0
+        for _ in range(photon_count):
+            if t_photon >= t_end or photon_index >= TIMESTAMPS_PER_PACKET:
+                break
+            self._words0[photon_index] = encode_timestamp_ch01_fast(t_photon)
+            photon_index += 1
+            t_photon += self._photon_step_ns()
+
+        self._next_ns_int = t_end + self._rng.randint(50, 250)
+
+    def next_pair(self) -> tuple[bytes | memoryview, bytes | memoryview]:
+        if self.is_complete:
+            raise StopIteration("cv_odmr experiment complete")
+
+        self._fill_single_pulse()
+
+        counter0 = self._shared_counter[0]
+        payload0 = pack_timestamp_payload(0, counter0, self._words0, self._payload0)
+        self._shared_counter[0] = (counter0 + 1) & 0xFFFF
+
+        counter2 = self._shared_counter[0]
+        payload2 = pack_timestamp_payload(2, counter2, self._words2, self._payload2)
+        self._shared_counter[0] = (counter2 + 1) & 0xFFFF
+
+        self._pairs_sent += 1
+        self._pulse_in_freq += 1
+        pulses_per_freq = self._experiment.repeats_per_freq * 2
+        if self._pulse_in_freq >= pulses_per_freq:
+            self._pulse_in_freq = 0
+            self._freq_index += 1
+
+        return payload0, payload2

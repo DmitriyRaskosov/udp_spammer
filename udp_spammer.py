@@ -9,7 +9,8 @@ import sys
 import time
 
 from config import SimulatorConfig
-from packet import DualChannelFactory, OdmrPairFactory, PacketFactory
+from packet import CvOdmrPairFactory, DualChannelFactory, OdmrPairFactory, PacketFactory
+from experiment_ini import load_cv_odmr_ini
 from timing import IntervalGenerator, wait_until
 from timestamp import TIMESTAMPS_PER_PACKET
 
@@ -39,6 +40,16 @@ def parse_args() -> argparse.Namespace:
         "--odmr-pair",
         action="store_true",
         help="Alternate ch0->ch2 for ODMR (photon + trigger, 0 us within pair, --interval between pairs)",
+    )
+    parser.add_argument(
+        "--cv-odmr-profile",
+        action="store_true",
+        help="cv_odmr experiment blocks from --experiment-ini (sparse random photons, one pulse per pair)",
+    )
+    parser.add_argument(
+        "--experiment-ini",
+        default="cv_odmr.ini",
+        help="cv_odmr.ini for --cv-odmr-profile (repeats + Rigol sweep)",
     )
     parser.add_argument(
         "--body-mode",
@@ -132,6 +143,8 @@ def build_config(args: argparse.Namespace) -> SimulatorConfig:
         bind_host=args.bind_host,
         dual_channel=args.dual_channel,
         odmr_pair=args.odmr_pair,
+        cv_odmr_profile=args.cv_odmr_profile,
+        experiment_ini=args.experiment_ini,
         pair_interval_s=args.interval,
     )
 
@@ -260,6 +273,60 @@ def run_odmr_pair(config: SimulatorConfig) -> int:
     return 0
 
 
+def run_cv_odmr_profile(config: SimulatorConfig) -> int:
+    experiment = load_cv_odmr_ini(config.experiment_ini)
+    factory = CvOdmrPairFactory(experiment)
+    destination = (config.dst_host, config.port)
+    sent = 0
+    target_pairs = experiment.total_pulse_pairs
+    target_packets = experiment.total_udp_packets
+    if config.packet_count > 0:
+        target_packets = min(config.packet_count, target_packets)
+
+    print(
+        "UDP lab simulator (cv_odmr profile: ch0 + ch2)\n"
+        f"  destination: {config.dst_host}:{config.port}\n"
+        f"  ini: {config.experiment_ini}\n"
+        f"  expected_groups: {experiment.expected_groups} "
+        f"({experiment.start_freq_mhz:.3f} MHz, step {experiment.freq_step_khz:.3f} kHz)\n"
+        f"  repeats_per_freq: {experiment.repeats_per_freq}\n"
+        f"  pulse pairs: {target_pairs} -> UDP packets: {target_packets}\n"
+        f"  pause between pairs: {config.pair_interval_s * 1e6:.0f} us\n"
+        f"  photons: random sparse (70-170 ns, occasional up to 500 ns)\n"
+    )
+
+    sock = create_socket(config)
+    try:
+        next_pair_at = time.perf_counter()
+        while not factory.is_complete and (config.packet_count == 0 or sent < config.packet_count):
+            wait_until(next_pair_at)
+            payload0, payload2 = factory.next_pair()
+            for payload in (payload0, payload2):
+                if config.packet_count != 0 and sent >= config.packet_count:
+                    break
+                sock.sendto(payload, destination)
+                sent += 1
+                if sent <= 4 or sent % ODMR_PROGRESS_EVERY == 0:
+                    print(
+                        f"sent #{sent}: ch={payload[0] & 0x0F} "
+                        f"counter={packet_prefix_counter(payload)} "
+                        f"prefix={payload[:4].hex()}"
+                    )
+            if config.packet_count != 0 and sent >= config.packet_count:
+                break
+            next_pair_at += config.pair_interval_s
+    except KeyboardInterrupt:
+        print("\nStopped by user.")
+    finally:
+        sock.close()
+
+    print(
+        f"Total packets sent: {sent} ({factory.pairs_sent} pulse pairs, "
+        f"freq blocks completed: {factory.pairs_sent // max(1, experiment.repeats_per_freq * 2)})"
+    )
+    return 0
+
+
 def run(config: SimulatorConfig, trigger_edge: int = 0) -> int:
     factory = PacketFactory(
         channel=config.channel,
@@ -342,6 +409,11 @@ def main() -> int:
     if config.odmr_pair and config.dual_channel:
         print("error: --odmr-pair and --dual-channel are mutually exclusive", file=sys.stderr)
         return 2
+    if config.cv_odmr_profile and (config.odmr_pair or config.dual_channel):
+        print("error: --cv-odmr-profile cannot be combined with --odmr-pair or --dual-channel", file=sys.stderr)
+        return 2
+    if config.cv_odmr_profile:
+        return run_cv_odmr_profile(config)
     if config.odmr_pair:
         if config.channel != 0:
             print("note: --odmr-pair sends ch0 and ch2; --channel is ignored", file=sys.stderr)

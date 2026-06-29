@@ -47,4 +47,6 @@ class SimulatorConfig:
 
     dual_channel: bool = False
     odmr_pair: bool = False
+    cv_odmr_profile: bool = False
+    experiment_ini: str = "cv_odmr.ini"
     pair_interval_s: float = 255e-6
