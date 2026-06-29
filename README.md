@@ -118,7 +118,7 @@ python udp_spammer.py --channel 2 --trigger-edge 1 --count 100
 
 Режим для потокового анализа на приёмнике ([odmr_test](https://github.com/DmitriyRaskosov/odmr_test), ветка **`home`**).
 
-**Production (online, без raw и без analyze.py):**
+**Production (one experiment from `cv_odmr.ini`, timing from t1..t5):**
 
 ```powershell
 # VM terminal 1:
@@ -128,13 +128,15 @@ python udp_spammer.py --channel 2 --trigger-edge 1 --count 100
 .\scripts\spammer_odmr_compare.ps1 -CvOdmrProfile -DstHost 192.168.1.9
 ```
 
-Профиль читает `cv_odmr.ini`: 36 частот × 100 повторов → 14 400 UDP-пакета, 36 строк в `pulses_grouped.txt`.
+Один sweep: `number_of_repeats` × Rigol-точки → строк в `pulses_grouped.txt` (= `expected_groups`). Пауза между UDP-парами из `t1,t2,t4`; между частотами — `t5`. Capture на VM останавливается сам, когда все группы записаны (или Ctrl+C).
 
-Быстрый smoke:
+Быстрый smoke (~255 µs, мини-ini):
 
 ```powershell
 .\scripts\spammer_odmr_compare.ps1 -CvOdmrProfile -QuickTest -DstHost 192.168.1.9
 ```
+
+Ускоренный профиль вручную: `--fast` или `--interval 255e-6`.
 
 Короткий legacy-smoke (400 пар, без полного sweep):
 
@@ -148,20 +150,14 @@ python udp_spammer.py --channel 2 --trigger-edge 1 --count 100
 
 `--odmr-pair` / `--cv-odmr-profile`: ch0+ch2, общий uint16 counter с 0; ch2 auto-toggle-edge для even/odd.
 
-**Длительные прогоны** (см. [TODO.md](TODO.md)):
+**Stress / soak** (не production; фиксированное время, см. [TODO.md](TODO.md)):
 
 ```powershell
-# 1 / 3 / 5 min smoke (match SOAK_DURATION_SEC on VM)
-.\scripts\spammer_odmr_compare.ps1 -LongCvOdmr -DurationSec 60 -DstHost 192.168.1.9
-
-# 10 min — цикл sweep из cv_odmr.ini
 .\scripts\spammer_odmr_compare.ps1 -LongCvOdmr -DurationSec 600 -DstHost 192.168.1.9
-
-# 1 h — плотный OdmrPair (~28M пакетов)
 .\scripts\spammer_odmr_compare.ps1 -SoakOdmrPair -DurationSec 3600 -DstHost 192.168.1.9
 ```
 
-CLI: `--duration SEC` с `--odmr-pair`; `--cv-odmr-loop` с `--cv-odmr-profile`.
+CLI: `--fast` для cv_odmr; `--cv-odmr-loop` + `--duration` только для stress.
 
 При длинных прогонах плотного потока (`OdmrPairFactory`) симулятор вставляет **+100 ms маркеры** при wrap coarse (~335 ms).
 

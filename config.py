@@ -49,6 +49,7 @@ class SimulatorConfig:
     odmr_pair: bool = False
     cv_odmr_profile: bool = False
     experiment_ini: str = "cv_odmr.ini"
-    pair_interval_s: float = 255e-6
+    pair_interval_s: float | None = None
+    use_ini_timing: bool = False
     duration_s: float = 0.0
     cv_odmr_loop: bool = False

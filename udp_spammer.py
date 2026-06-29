@@ -17,6 +17,10 @@ from timestamp import TIMESTAMPS_PER_PACKET
 ODMR_PROGRESS_EVERY = 20_000
 
 
+def resolved_pair_interval_s(config: SimulatorConfig) -> float:
+    return config.pair_interval_s if config.pair_interval_s is not None else 255e-6
+
+
 def estimate_udp_packets(duration_s: float, pair_interval_s: float) -> int:
     if duration_s <= 0 or pair_interval_s <= 0:
         return 0
@@ -122,12 +126,22 @@ def parse_args() -> argparse.Namespace:
         help="Insert +100 ms marker (word 0) every N packets; 0=disabled",
     )
     parser.add_argument(
+        "--fast",
+        action="store_true",
+        help="cv_odmr profile: fixed 255 us between pairs (ignore ini t1..t5 timing)",
+    )
+    parser.add_argument(
         "--timing",
         choices=("fixed", "random", "list"),
         default="random",
-        help="Inter-packet delay mode",
+        help="Inter-packet delay mode (non cv_odmr-ini modes)",
     )
-    parser.add_argument("--interval", type=float, default=255e-6, help="Fixed delay in seconds")
+    parser.add_argument(
+        "--interval",
+        type=float,
+        default=None,
+        help="Fixed delay in seconds (overrides ini timing for cv_odmr)",
+    )
     parser.add_argument("--random-min", type=float, default=50e-6, help="Random delay lower bound")
     parser.add_argument("--random-max", type=float, default=300e-6, help="Random delay upper bound")
     parser.add_argument(
@@ -148,6 +162,13 @@ def parse_args() -> argparse.Namespace:
 def build_config(args: argparse.Namespace) -> SimulatorConfig:
     interval_list = tuple(float(item.strip()) for item in args.interval_list.split(",") if item.strip())
     events = max(1, min(args.events_per_packet, TIMESTAMPS_PER_PACKET))
+    use_ini_timing = bool(args.cv_odmr_profile and not args.cv_odmr_loop and not args.fast and args.interval is None)
+    if args.fast:
+        pair_interval: float | None = 255e-6
+    elif args.interval is not None:
+        pair_interval = args.interval
+    else:
+        pair_interval = 255e-6 if not use_ini_timing else None
     return SimulatorConfig(
         src_host=args.src_host,
         dst_host=args.dst_host,
@@ -172,7 +193,8 @@ def build_config(args: argparse.Namespace) -> SimulatorConfig:
         odmr_pair=args.odmr_pair,
         cv_odmr_profile=args.cv_odmr_profile,
         experiment_ini=args.experiment_ini,
-        pair_interval_s=args.interval,
+        pair_interval_s=pair_interval,
+        use_ini_timing=use_ini_timing,
         duration_s=max(0.0, args.duration),
         cv_odmr_loop=args.cv_odmr_loop,
     )
@@ -201,7 +223,7 @@ def run_dual(config: SimulatorConfig) -> int:
     print(
         "UDP lab simulator (dual channel)\n"
         f"  destination: {config.dst_host}:{config.port}\n"
-        f"  pattern: ch0->ch1 (0 us) -> pause {config.pair_interval_s * 1e6:.0f} us -> ...\n"
+        f"  pattern: ch0->ch1 (0 us) -> pause {resolved_pair_interval_s(config) * 1e6:.0f} us -> ...\n"
         f"  body mode: {config.body_mode}\n"
         f"  payload size: 1024 bytes\n"
         f"  shared counter start: 0\n"
@@ -233,7 +255,7 @@ def run_dual(config: SimulatorConfig) -> int:
                     )
             if config.packet_count != 0 and sent >= config.packet_count:
                 break
-            next_pair_at += config.pair_interval_s
+            next_pair_at += resolved_pair_interval_s(config)
     except KeyboardInterrupt:
         print("\nStopped by user.")
     finally:
@@ -262,14 +284,14 @@ def run_odmr_pair(config: SimulatorConfig) -> int:
     print(
         "UDP lab simulator (ODMR pair: ch0 + ch2)\n"
         f"  destination: {config.dst_host}:{config.port}\n"
-        f"  pattern: ch0->ch2 (0 us) -> pause {config.pair_interval_s * 1e6:.0f} us -> ...\n"
+        f"  pattern: ch0->ch2 (0 us) -> pause {resolved_pair_interval_s(config) * 1e6:.0f} us -> ...\n"
         f"  body mode: {config.body_mode}\n"
         f"  ch2 auto-toggle-edge: on\n"
         f"  payload size: 1024 bytes\n"
         f"  shared counter start: 0\n"
     )
     if config.duration_s > 0:
-        est = estimate_udp_packets(config.duration_s, config.pair_interval_s)
+        est = estimate_udp_packets(config.duration_s, resolved_pair_interval_s(config))
         print(f"  duration: {config.duration_s:.0f} s (~{est} UDP packets)\n")
     if config.body_mode == "timestamps":
         print(
@@ -298,7 +320,7 @@ def run_odmr_pair(config: SimulatorConfig) -> int:
                     )
             if not should_send_more(sent, config, deadline):
                 break
-            next_pair_at += config.pair_interval_s
+            next_pair_at += resolved_pair_interval_s(config)
     except KeyboardInterrupt:
         print("\nStopped by user.")
     finally:
@@ -318,15 +340,29 @@ def run_cv_odmr_profile(config: SimulatorConfig) -> int:
     if config.packet_count > 0:
         target_packets = min(config.packet_count, target_packets)
 
+    if config.use_ini_timing:
+        pair_interval_s = experiment.pair_interval_s
+        freq_pause_s = experiment.freq_step_pause_s
+        timing_note = (
+            f"ini timing: pair={pair_interval_s * 1e6:.1f} us, "
+            f"t5 between freqs={freq_pause_s * 1e6:.1f} us, "
+            f"est. duration={experiment.estimated_duration_s():.1f} s"
+        )
+    else:
+        pair_interval_s = config.pair_interval_s or 255e-6
+        freq_pause_s = 0.0
+        timing_note = f"fixed pair interval: {pair_interval_s * 1e6:.0f} us (--fast or --interval)"
+
     print(
-        "UDP lab simulator (cv_odmr profile: ch0 + ch2)\n"
+        "UDP lab simulator (cv_odmr profile: ch0 + ch2, single experiment)\n"
         f"  destination: {config.dst_host}:{config.port}\n"
         f"  ini: {config.experiment_ini}\n"
         f"  expected_groups: {experiment.expected_groups} "
         f"({experiment.start_freq_mhz:.3f} MHz, step {experiment.freq_step_khz:.3f} kHz)\n"
         f"  repeats_per_freq: {experiment.repeats_per_freq}\n"
+        f"  t1..t5 ns: {experiment.t1_ns}, {experiment.t2_ns}, {experiment.t4_ns}, {experiment.t5_ns}\n"
         f"  pulse pairs: {target_pairs} -> UDP packets: {target_packets}\n"
-        f"  pause between pairs: {config.pair_interval_s * 1e6:.0f} us\n"
+        f"  {timing_note}\n"
         f"  photons: random sparse (70-170 ns, occasional up to 500 ns)\n"
     )
 
@@ -349,7 +385,9 @@ def run_cv_odmr_profile(config: SimulatorConfig) -> int:
                     )
             if config.packet_count != 0 and sent >= config.packet_count:
                 break
-            next_pair_at += config.pair_interval_s
+            if factory.crossed_freq_boundary:
+                next_pair_at += freq_pause_s
+            next_pair_at += pair_interval_s
     except KeyboardInterrupt:
         print("\nStopped by user.")
     finally:
@@ -357,7 +395,7 @@ def run_cv_odmr_profile(config: SimulatorConfig) -> int:
 
     print(
         f"Total packets sent: {sent} ({factory.pairs_sent} pulse pairs, "
-        f"freq blocks completed: {factory.pairs_sent // max(1, experiment.repeats_per_freq * 2)})"
+        f"freq blocks completed: {min(experiment.expected_groups, factory.pairs_sent // max(1, experiment.repeats_per_freq * 2))})"
     )
     return 0
 
@@ -368,7 +406,8 @@ def run_cv_odmr_loop(config: SimulatorConfig) -> int:
     sent = 0
     sweeps = 0
     deadline = time.perf_counter() + config.duration_s
-    est = estimate_udp_packets(config.duration_s, config.pair_interval_s)
+    pair_iv = resolved_pair_interval_s(config)
+    est = estimate_udp_packets(config.duration_s, pair_iv)
 
     print(
         "UDP lab simulator (cv_odmr loop: ch0 + ch2)\n"
@@ -378,7 +417,7 @@ def run_cv_odmr_loop(config: SimulatorConfig) -> int:
         f"  repeats_per_freq: {experiment.repeats_per_freq}\n"
         f"  packets per sweep: {experiment.total_udp_packets}\n"
         f"  duration: {config.duration_s:.0f} s (~{est} UDP packets total)\n"
-        f"  pause between pairs: {config.pair_interval_s * 1e6:.0f} us\n"
+        f"  pause between pairs: {pair_iv * 1e6:.0f} us\n"
         f"  packet counter: continuous across sweeps (no reset at sweep boundary)\n"
     )
 
@@ -402,7 +441,7 @@ def run_cv_odmr_loop(config: SimulatorConfig) -> int:
                         )
                 if time.perf_counter() >= deadline:
                     break
-                next_pair_at += config.pair_interval_s
+                next_pair_at += resolved_pair_interval_s(config)
             if time.perf_counter() >= deadline:
                 break
             sweeps += 1

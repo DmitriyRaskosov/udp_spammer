@@ -20,8 +20,8 @@ No `ch0_0.txt`, no `analyze.py` in production.
 
 | ID | Duration | Spammer (Windows) | Capture (VM) | ~Packets |
 |----|----------|-------------------|--------------|----------|
-| **T0** | ~30 s | `-CvOdmrProfile` | `run_stream.sh` | 14 400 |
-| **T1** | 10 min | `-LongCvOdmr -DurationSec 600` | `run_soak.sh` SOAK=600 | ~4.7M |
+| **T0** | ini-defined | `-CvOdmrProfile` | `run_stream.sh` | one sweep |
+| **T1** | wall-clock stress | `-LongCvOdmr` | `run_soak.sh` | many sweeps |
 | **T2** | 1 h | `-SoakOdmrPair -DurationSec 3600` | `run_soak.sh` SOAK=3600 | ~28M |
 | **T3** | 10 h+ | same, longer | same | ~280M |
 
@@ -58,9 +58,9 @@ T0 also: `analyze groups: 36 (expected 36)`.
 
 ### P3 — lab / analyze hardening (later)
 
+- [x] Production: one ini experiment, timing from t1..t5, capture auto-stop at expected_groups
 - [ ] Frequency boundary marker in `analyze_stream`
-- [ ] Auto-stop capture with `cv_odmr`
-- [ ] Optional `t1..t5` duration estimate in ini reader
+- [ ] Optional shared ini duration estimate on VM startup log
 
 ---
 

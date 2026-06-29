@@ -140,6 +140,24 @@ def verify_legacy_mode() -> None:
     print("legacy counter_fill header: OK")
 
 
+def verify_experiment_ini_timing() -> None:
+    exp = CvOdmrExperiment(
+        repeats_per_freq=100,
+        t1_ns=50_000,
+        t2_ns=500_000,
+        t4_ns=10_000,
+        t5_ns=50_000,
+        start_freq_hz=2855e6,
+        stop_freq_hz=2890e6,
+        freq_step_hz=1e6,
+    )
+    assert exp.expected_groups == 36
+    assert abs(exp.pair_interval_s - 280e-6) < 1e-9
+    assert abs(exp.freq_step_pause_s - 50e-6) < 1e-9
+    assert 1.5 < exp.estimated_duration_s() < 3.0
+    print("cv_odmr ini timing estimate: OK")
+
+
 def verify_cv_odmr_loop_counter() -> None:
     """reset_sweep must not reset the shared uint16 packet counter."""
     exp = CvOdmrExperiment(
@@ -165,6 +183,7 @@ def main() -> None:
     verify_timestamps_mode()
     verify_dual_channel()
     verify_odmr_pair()
+    verify_experiment_ini_timing()
     verify_cv_odmr_loop_counter()
     verify_odmr_pair_marker_sync()
     verify_coarse_wrap_markers()

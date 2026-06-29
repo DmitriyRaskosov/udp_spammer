@@ -412,6 +412,12 @@ class CvOdmrPairFactory:
         self._pairs_sent = 0
         self._freq_index = 0
         self._pulse_in_freq = 0
+        self._crossed_freq_boundary = False
+
+    @property
+    def crossed_freq_boundary(self) -> bool:
+        """True if the last next_pair() advanced to the next Rigol frequency."""
+        return self._crossed_freq_boundary
 
     @property
     def counter(self) -> int:
@@ -473,6 +479,7 @@ class CvOdmrPairFactory:
         if self.is_complete:
             raise StopIteration("cv_odmr experiment complete")
 
+        self._crossed_freq_boundary = False
         self._fill_single_pulse()
 
         counter0 = self._shared_counter[0]
@@ -489,5 +496,6 @@ class CvOdmrPairFactory:
         if self._pulse_in_freq >= pulses_per_freq:
             self._pulse_in_freq = 0
             self._freq_index += 1
+            self._crossed_freq_boundary = True
 
         return payload0, payload2

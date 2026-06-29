@@ -25,10 +25,9 @@ if ($SoakOdmrPair) {
 
 if ($LongCvOdmr) {
     if ($DurationSec -le 0) { $DurationSec = 600 }
-    Write-Host "Long cv_odmr: loop ini sweep for ${DurationSec}s"
-    python -u udp_spammer.py --dst-host $DstHost --cv-odmr-profile --cv-odmr-loop `
-        --experiment-ini $ExperimentIni --timing fixed --interval ($IntervalUs * 1e-6) `
-        --duration $DurationSec
+    Write-Host "Stress: cv_odmr loop for ${DurationSec}s (fast 255us, not production timing)"
+    python -u udp_spammer.py --dst-host $DstHost --cv-odmr-profile --cv-odmr-loop --fast `
+        --experiment-ini $ExperimentIni --duration $DurationSec
     exit $LASTEXITCODE
 }
 
@@ -39,6 +38,10 @@ if ($CvOdmrProfile) {
         @"
 [General]
 number_of_repeats = $RepeatsPerFreq
+t1 = 50000
+t2 = 500000
+t4 = 10000
+t5 = 50000
 
 [Rigol]
 start_freq = 2855 * 1E6
@@ -47,9 +50,13 @@ freq_step = 1000 * 1E3
 gain = 8
 "@ | Set-Content -Encoding utf8 $iniPath
         $ExperimentIni = "cv_odmr_test.ini"
+        python -u udp_spammer.py --dst-host $DstHost --cv-odmr-profile `
+            --experiment-ini $ExperimentIni --fast
+        exit $LASTEXITCODE
     }
+    Write-Host "Production cv_odmr: single experiment, timing from ini t1..t5"
     python -u udp_spammer.py --dst-host $DstHost --cv-odmr-profile `
-        --experiment-ini $ExperimentIni --timing fixed --interval ($IntervalUs * 1e-6)
+        --experiment-ini $ExperimentIni
     exit $LASTEXITCODE
 }
 
