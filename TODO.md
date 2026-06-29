@@ -52,7 +52,7 @@ T0 also: `analyze groups: 36 (expected 36)`.
 ### P2 — spammer long modes
 
 - [x] `--duration SEC` for `--odmr-pair`
-- [x] `--cv-odmr-loop` + `--duration` (repeat ini sweep)
+- [x] `--cv-odmr-loop` + `--duration` (repeat ini sweep; counter continuous across sweeps)
 - [x] `spammer_odmr_compare.ps1`: `-SoakOdmrPair`, `-LongCvOdmr`, `-DurationSec`
 - [ ] VM T1: 10 min `-LongCvOdmr` joint test
 
@@ -86,6 +86,18 @@ SOAK_DURATION_SEC=600 RUN_LABEL=cv_odmr_10m bash scripts/run_soak.sh
 ```powershell
 .\scripts\spammer_odmr_compare.ps1 -LongCvOdmr -DurationSec 600 -DstHost 192.168.1.9
 ```
+
+**T1 smoke (1 / 3 / 5 min)** — same pair, match duration on both sides:
+
+```bash
+SOAK_DURATION_SEC=60 RUN_LABEL=cv_odmr_1m bash scripts/run_soak.sh
+```
+
+```powershell
+.\scripts\spammer_odmr_compare.ps1 -LongCvOdmr -DurationSec 60 -DstHost 192.168.1.9
+```
+
+(`180` / `300` for 3 min / 5 min.) Success: `reorder late drops: 0`, `analyze groups` grows (~36 per sweep).
 
 **T2 — 1 h dense soak:**
 

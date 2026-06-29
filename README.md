@@ -151,6 +151,9 @@ python udp_spammer.py --channel 2 --trigger-edge 1 --count 100
 **Длительные прогоны** (см. [TODO.md](TODO.md)):
 
 ```powershell
+# 1 / 3 / 5 min smoke (match SOAK_DURATION_SEC on VM)
+.\scripts\spammer_odmr_compare.ps1 -LongCvOdmr -DurationSec 60 -DstHost 192.168.1.9
+
 # 10 min — цикл sweep из cv_odmr.ini
 .\scripts\spammer_odmr_compare.ps1 -LongCvOdmr -DurationSec 600 -DstHost 192.168.1.9
 

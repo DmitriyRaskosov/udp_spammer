@@ -425,6 +425,11 @@ class CvOdmrPairFactory:
     def is_complete(self) -> bool:
         return self._freq_index >= self._experiment.expected_groups
 
+    def reset_sweep(self) -> None:
+        """Start the next ini sweep; shared packet counter keeps incrementing."""
+        self._freq_index = 0
+        self._pulse_in_freq = 0
+
     def _photon_step_ns(self) -> int:
         if self._rng.random() < self._photon_step_rare_prob:
             return self._rng.randint(self._photon_step_min_ns, self._photon_step_rare_max_ns)

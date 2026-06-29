@@ -5,7 +5,8 @@ from __future__ import annotations
 
 import struct
 
-from packet import DualChannelFactory, OdmrPairFactory, PacketFactory
+from packet import CvOdmrPairFactory, DualChannelFactory, OdmrPairFactory, PacketFactory
+from experiment_ini import CvOdmrExperiment
 from timestamp import TIMESTAMPS_PER_PACKET, MARKER_100MS, COARSE_WRAP_NS, decode_timestamp, encode_timestamp_ch2
 
 
@@ -139,11 +140,32 @@ def verify_legacy_mode() -> None:
     print("legacy counter_fill header: OK")
 
 
+def verify_cv_odmr_loop_counter() -> None:
+    """reset_sweep must not reset the shared uint16 packet counter."""
+    exp = CvOdmrExperiment(
+        repeats_per_freq=1,
+        start_freq_hz=2855e6,
+        stop_freq_hz=2856e6,
+        freq_step_hz=1e6,
+    )
+    factory = CvOdmrPairFactory(exp)
+    for _ in range(exp.total_pulse_pairs):
+        factory.next_pair()
+    counter_after_sweep = factory.counter
+    assert factory.is_complete
+    factory.reset_sweep()
+    assert not factory.is_complete
+    p0, _ = factory.next_pair()
+    assert int.from_bytes(p0[2:4], "big") == counter_after_sweep
+    print("cv_odmr reset_sweep keeps counter: OK")
+
+
 def main() -> None:
     verify_encode_ch2_no_recursion()
     verify_timestamps_mode()
     verify_dual_channel()
     verify_odmr_pair()
+    verify_cv_odmr_loop_counter()
     verify_odmr_pair_marker_sync()
     verify_coarse_wrap_markers()
     verify_odmr_pair_stress()

@@ -379,13 +379,14 @@ def run_cv_odmr_loop(config: SimulatorConfig) -> int:
         f"  packets per sweep: {experiment.total_udp_packets}\n"
         f"  duration: {config.duration_s:.0f} s (~{est} UDP packets total)\n"
         f"  pause between pairs: {config.pair_interval_s * 1e6:.0f} us\n"
+        f"  packet counter: continuous across sweeps (no reset at sweep boundary)\n"
     )
 
+    factory = CvOdmrPairFactory(experiment)
     sock = create_socket(config)
     try:
         next_pair_at = time.perf_counter()
         while time.perf_counter() < deadline:
-            factory = CvOdmrPairFactory(experiment)
             while not factory.is_complete and time.perf_counter() < deadline:
                 wait_until(next_pair_at)
                 payload0, payload2 = factory.next_pair()
@@ -399,10 +400,18 @@ def run_cv_odmr_loop(config: SimulatorConfig) -> int:
                             f"sent #{sent}: sweep={sweeps + 1} ch={payload[0] & 0x0F} "
                             f"counter={packet_prefix_counter(payload)}"
                         )
+                if time.perf_counter() >= deadline:
+                    break
                 next_pair_at += config.pair_interval_s
+            if time.perf_counter() >= deadline:
+                break
             sweeps += 1
+            factory.reset_sweep()
             if sent <= 4 or sent % ODMR_PROGRESS_EVERY == 0:
-                print(f"  completed sweep {sweeps} ({sent} packets total)")
+                print(
+                    f"  completed sweep {sweeps} ({sent} packets total, "
+                    f"counter now {factory.counter})"
+                )
     except KeyboardInterrupt:
         print("\nStopped by user.")
     finally:
