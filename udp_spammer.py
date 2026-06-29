@@ -17,6 +17,22 @@ from timestamp import TIMESTAMPS_PER_PACKET
 ODMR_PROGRESS_EVERY = 20_000
 
 
+def estimate_udp_packets(duration_s: float, pair_interval_s: float) -> int:
+    if duration_s <= 0 or pair_interval_s <= 0:
+        return 0
+    return int(duration_s / pair_interval_s) * 2
+
+
+def should_send_more(sent: int, config: SimulatorConfig, deadline: float | None) -> bool:
+    if deadline is not None and time.perf_counter() >= deadline:
+        return False
+    if config.packet_count > 0 and sent >= config.packet_count:
+        return False
+    if deadline is None and config.packet_count == 0:
+        return True
+    return True
+
+
 def packet_prefix_counter(payload: bytes) -> int:
     """uint16 packet counter from prefix bytes 2..3 (big-endian)."""
     return int.from_bytes(payload[2:4], "big")
@@ -57,7 +73,18 @@ def parse_args() -> argparse.Namespace:
         default="timestamps",
         help="timestamps=odmr-compatible (bytes 4..1023); legacy modes fill bytes 12..1023",
     )
-    parser.add_argument("--count", type=int, default=0, help="Packets to send, 0 = infinite")
+    parser.add_argument("--count", type=int, default=0, help="Packets to send, 0 = infinite or --duration")
+    parser.add_argument(
+        "--duration",
+        type=float,
+        default=0.0,
+        help="Run for N seconds (overrides profile packet limit when set)",
+    )
+    parser.add_argument(
+        "--cv-odmr-loop",
+        action="store_true",
+        help="With --cv-odmr-profile: repeat full ini sweep until --duration elapses",
+    )
     parser.add_argument("--ts-base-ns", type=float, default=1000.0, help="Initial event time in ns")
     parser.add_argument(
         "--ts2-offset-ns",
@@ -146,6 +173,8 @@ def build_config(args: argparse.Namespace) -> SimulatorConfig:
         cv_odmr_profile=args.cv_odmr_profile,
         experiment_ini=args.experiment_ini,
         pair_interval_s=args.interval,
+        duration_s=max(0.0, args.duration),
+        cv_odmr_loop=args.cv_odmr_loop,
     )
 
 
@@ -226,6 +255,9 @@ def run_odmr_pair(config: SimulatorConfig) -> int:
     )
     destination = (config.dst_host, config.port)
     sent = 0
+    deadline = None
+    if config.duration_s > 0:
+        deadline = time.perf_counter() + config.duration_s
 
     print(
         "UDP lab simulator (ODMR pair: ch0 + ch2)\n"
@@ -236,6 +268,9 @@ def run_odmr_pair(config: SimulatorConfig) -> int:
         f"  payload size: 1024 bytes\n"
         f"  shared counter start: 0\n"
     )
+    if config.duration_s > 0:
+        est = estimate_udp_packets(config.duration_s, config.pair_interval_s)
+        print(f"  duration: {config.duration_s:.0f} s (~{est} UDP packets)\n")
     if config.body_mode == "timestamps":
         print(
             f"  events per packet: {config.events_per_packet} (padded to {TIMESTAMPS_PER_PACKET})\n"
@@ -245,14 +280,14 @@ def run_odmr_pair(config: SimulatorConfig) -> int:
     sock = create_socket(config)
     try:
         next_pair_at = time.perf_counter()
-        while config.packet_count == 0 or sent < config.packet_count:
+        while should_send_more(sent, config, deadline):
             wait_until(next_pair_at)
             payload0, payload2 = factory.next_pair()
             for payload in (payload0, payload2):
+                if not should_send_more(sent, config, deadline):
+                    break
                 if len(payload) != 1024:
                     raise RuntimeError(f"Unexpected payload size: {len(payload)}")
-                if config.packet_count != 0 and sent >= config.packet_count:
-                    break
                 sock.sendto(payload, destination)
                 sent += 1
                 if sent <= 4 or sent % ODMR_PROGRESS_EVERY == 0:
@@ -261,7 +296,7 @@ def run_odmr_pair(config: SimulatorConfig) -> int:
                         f"counter={packet_prefix_counter(payload)} "
                         f"prefix={payload[:4].hex()}"
                     )
-            if config.packet_count != 0 and sent >= config.packet_count:
+            if not should_send_more(sent, config, deadline):
                 break
             next_pair_at += config.pair_interval_s
     except KeyboardInterrupt:
@@ -324,6 +359,57 @@ def run_cv_odmr_profile(config: SimulatorConfig) -> int:
         f"Total packets sent: {sent} ({factory.pairs_sent} pulse pairs, "
         f"freq blocks completed: {factory.pairs_sent // max(1, experiment.repeats_per_freq * 2)})"
     )
+    return 0
+
+
+def run_cv_odmr_loop(config: SimulatorConfig) -> int:
+    experiment = load_cv_odmr_ini(config.experiment_ini)
+    destination = (config.dst_host, config.port)
+    sent = 0
+    sweeps = 0
+    deadline = time.perf_counter() + config.duration_s
+    est = estimate_udp_packets(config.duration_s, config.pair_interval_s)
+
+    print(
+        "UDP lab simulator (cv_odmr loop: ch0 + ch2)\n"
+        f"  destination: {config.dst_host}:{config.port}\n"
+        f"  ini: {config.experiment_ini}\n"
+        f"  expected_groups per sweep: {experiment.expected_groups}\n"
+        f"  repeats_per_freq: {experiment.repeats_per_freq}\n"
+        f"  packets per sweep: {experiment.total_udp_packets}\n"
+        f"  duration: {config.duration_s:.0f} s (~{est} UDP packets total)\n"
+        f"  pause between pairs: {config.pair_interval_s * 1e6:.0f} us\n"
+    )
+
+    sock = create_socket(config)
+    try:
+        next_pair_at = time.perf_counter()
+        while time.perf_counter() < deadline:
+            factory = CvOdmrPairFactory(experiment)
+            while not factory.is_complete and time.perf_counter() < deadline:
+                wait_until(next_pair_at)
+                payload0, payload2 = factory.next_pair()
+                for payload in (payload0, payload2):
+                    if time.perf_counter() >= deadline:
+                        break
+                    sock.sendto(payload, destination)
+                    sent += 1
+                    if sent <= 4 or sent % ODMR_PROGRESS_EVERY == 0:
+                        print(
+                            f"sent #{sent}: sweep={sweeps + 1} ch={payload[0] & 0x0F} "
+                            f"counter={packet_prefix_counter(payload)}"
+                        )
+                next_pair_at += config.pair_interval_s
+            sweeps += 1
+            if sent <= 4 or sent % ODMR_PROGRESS_EVERY == 0:
+                print(f"  completed sweep {sweeps} ({sent} packets total)")
+    except KeyboardInterrupt:
+        print("\nStopped by user.")
+    finally:
+        sock.close()
+
+    elapsed = config.duration_s
+    print(f"Total packets sent: {sent} ({sweeps} full sweeps, duration target {elapsed:.0f} s)")
     return 0
 
 
@@ -412,6 +498,11 @@ def main() -> int:
     if config.cv_odmr_profile and (config.odmr_pair or config.dual_channel):
         print("error: --cv-odmr-profile cannot be combined with --odmr-pair or --dual-channel", file=sys.stderr)
         return 2
+    if config.cv_odmr_profile and config.cv_odmr_loop:
+        if config.duration_s <= 0:
+            print("error: --cv-odmr-loop requires --duration > 0", file=sys.stderr)
+            return 2
+        return run_cv_odmr_loop(config)
     if config.cv_odmr_profile:
         return run_cv_odmr_profile(config)
     if config.odmr_pair:

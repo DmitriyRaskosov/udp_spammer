@@ -1,16 +1,36 @@
-# ODMR sender (Windows). Start VM first: ~/odmr/scripts/run_stream.sh
+# ODMR sender (Windows). Start VM capture first.
 param(
     [string]$DstHost = "192.168.1.9",
     [int]$Count = 0,
     [double]$IntervalUs = 255,
     [switch]$CvOdmrProfile,
     [switch]$QuickTest,
+    [switch]$SoakOdmrPair,
+    [switch]$LongCvOdmr,
+    [int]$DurationSec = 0,
     [string]$ExperimentIni = "cv_odmr.ini",
     [int]$NumFreq = 3,
     [int]$RepeatsPerFreq = 5
 )
 $Root = Split-Path $PSScriptRoot -Parent
 Set-Location $Root
+
+if ($SoakOdmrPair) {
+    if ($DurationSec -le 0) { $DurationSec = 3600 }
+    Write-Host "Soak: dense OdmrPair for ${DurationSec}s (~$([int]($DurationSec * 1000000 / $IntervalUs * 2)) packets)"
+    python -u udp_spammer.py --dst-host $DstHost --odmr-pair --body-mode timestamps `
+        --timing fixed --interval ($IntervalUs * 1e-6) --duration $DurationSec
+    exit $LASTEXITCODE
+}
+
+if ($LongCvOdmr) {
+    if ($DurationSec -le 0) { $DurationSec = 600 }
+    Write-Host "Long cv_odmr: loop ini sweep for ${DurationSec}s"
+    python -u udp_spammer.py --dst-host $DstHost --cv-odmr-profile --cv-odmr-loop `
+        --experiment-ini $ExperimentIni --timing fixed --interval ($IntervalUs * 1e-6) `
+        --duration $DurationSec
+    exit $LASTEXITCODE
+}
 
 if ($CvOdmrProfile) {
     if ($QuickTest) {

@@ -148,6 +148,18 @@ python udp_spammer.py --channel 2 --trigger-edge 1 --count 100
 
 `--odmr-pair` / `--cv-odmr-profile`: ch0+ch2, общий uint16 counter с 0; ch2 auto-toggle-edge для even/odd.
 
+**Длительные прогоны** (см. [TODO.md](TODO.md)):
+
+```powershell
+# 10 min — цикл sweep из cv_odmr.ini
+.\scripts\spammer_odmr_compare.ps1 -LongCvOdmr -DurationSec 600 -DstHost 192.168.1.9
+
+# 1 h — плотный OdmrPair (~28M пакетов)
+.\scripts\spammer_odmr_compare.ps1 -SoakOdmrPair -DurationSec 3600 -DstHost 192.168.1.9
+```
+
+CLI: `--duration SEC` с `--odmr-pair`; `--cv-odmr-loop` с `--cv-odmr-profile`.
+
 При длинных прогонах плотного потока (`OdmrPairFactory`) симулятор вставляет **+100 ms маркеры** при wrap coarse (~335 ms).
 
 Проверка: `python verify_packets.py`
